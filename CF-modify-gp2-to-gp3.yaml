@@ -1,0 +1,137 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: "The CF will create lambda to find all GP2 volumes then modify to GP3 in all regions, create the relevant permissions and send sns"
+
+Parameters:
+
+  S3BucketWithCodes:
+    Default: "Enter the name of s3 bucket who contain the modify code for lambda function"
+    Description: "Enter the name of s3 bucket who contain the modify code for lambda function"
+    Type: String
+
+  YourS3keyTagZIP:
+    Default: Lambda_modify_gp2_to_gp3.py.zip
+    Description: "Enter name of tag zip code file(From Cloudteam)"
+    Type: String
+
+  CreateSnsTopic:
+    Type: String
+    Default: 'False'
+    AllowedValues:
+      - 'True'
+      - 'False'
+    Description: Do You want to create new SNS topic and subscription? if you have one and you want to use yours please answer False
+
+  EndpointSubscription:
+      Type: String
+      Default: 'your_email@gmail.com'
+      Description: Relevant if you want new Topic!! Enter your email to get SNS notification, else do nothing
+
+  ExistSnsTopicArn:
+      Type: String
+      Default: 'arn:aws:sns:us-east-1:XXXX:org-sns'
+      Description: Relevant if you have exist Topic and subscription!! Enter exist topic ARN, else do nothing
+
+Conditions:
+  CreateSnsTopicCondition:
+    'Fn::Equals':
+      - Ref: CreateSnsTopic
+      - 'True'
+
+Resources:
+
+  FunctionModifyVolumesGp2toGp3:
+    Type: 'AWS::Lambda::Function'
+    Properties:
+      Handler: Lambda_modify_gp2_to_gp3.lambda_handler
+      Role:
+        'Fn::GetAtt':
+          - ModifyGp2ToGp3Role
+          - Arn
+      FunctionName: Cloudteam-modify-gp2-to-gp3
+      Code:
+        S3Bucket:
+          Ref: S3BucketWithCodes #your s3 bucket
+        S3Key:
+          !Ref YourS3keyTagZIP
+      Environment:
+        Variables:
+          SNS_ARN_TOPIC:
+             !If [CreateSnsTopicCondition, !Ref SNSTopic, !Ref ExistSnsTopicArn]
+      Runtime: python3.9
+      Timeout: 60
+      TracingConfig:
+        Mode: Active
+
+  ModifyVolumesGp2toGp3RuleCron:
+    Type: 'AWS::Events::Rule'
+    Properties:
+      Name: ModifyVolumesGp2toGp3RuleCron
+      Description: Lmabda trigger evrey day at 10:00 am
+      ScheduleExpression:
+        cron(0 8 * * ? *)
+      Targets:
+        - Id: DeleteUnattachedVolumesScheduleTarget
+          Arn:
+            'Fn::GetAtt':
+              - FunctionModifyVolumesGp2toGp3
+              - Arn
+      State: ENABLED
+
+  ModifyAsgScheduleInvokeLambdaPermission:
+    Type: 'AWS::Lambda::Permission'
+    Properties:
+      FunctionName:
+        Ref: FunctionModifyVolumesGp2toGp3
+      Action: 'lambda:InvokeFunction'
+      Principal: events.amazonaws.com
+      SourceArn:
+        'Fn::GetAtt':
+          - ModifyVolumesGp2toGp3RuleCron
+          - Arn
+
+  SNSTopic:
+    Condition: CreateSnsTopicCondition
+    Type: 'AWS::SNS::Topic'
+    Properties:
+      Subscription:
+        - Endpoint:
+            Ref: EndpointSubscription
+          Protocol: "email"
+      TopicName: "modify_volumes_gp2_to_gp3"
+
+  ModifyGp2ToGp3Role:
+      Type: 'AWS::IAM::Role'
+      Properties:
+        RoleName: ModifyGp2ToGp3Role
+        AssumeRolePolicyDocument:
+          Version: '2012-10-17'
+          Statement:
+            - Effect: Allow
+              Principal:
+                Service:
+                  - lambda.amazonaws.com
+              Action:
+                - 'sts:AssumeRole'
+        Path: /
+        Policies:
+          - PolicyName: AWSLambdaBasicExecutionRole
+            PolicyDocument:
+              Version: '2012-10-17'
+              Statement:
+                - Effect: Allow
+                  Action:
+                    - 'logs:CreateLogGroup'
+                    - 'logs:CreateLogStream'
+                    - 'logs:PutLogEvents'
+                  Resource: '*'
+          - PolicyName: ModifyGp2ToGp3Policy
+            PolicyDocument:
+              Version: '2012-10-17'
+              Statement:
+                - Effect: Allow
+                  Action:
+                    - 'ec2:ModifyVolume'
+                    - 'ec2:DescribeRegions'
+                    - 'ec2:DescribeVolumes'
+                    - 'sns:Publish'
+                  Resource: '*'
